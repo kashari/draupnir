@@ -130,6 +130,9 @@ func (r *Router) ListRoutes() []string {
 }
 
 // ServeHTTP implements http.Handler.
+// It checks if the request matches a static or dynamic route and executes the corresponding handler.
+// If no route matches, it returns a 404 Not Found error.
+// It also logs the request details and execution time.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	start := time.Now()
 
@@ -188,6 +191,22 @@ func (r *Router) executeHandler(w http.ResponseWriter, req *http.Request, handle
 }
 
 // Start launches the HTTP server on the specified port after printing full configuration.
+// It also logs the startup information and registered routes.
+// The server will listen on the specified port and handle incoming requests.
+// The server will run indefinitely until an error occurs or the program is terminated.
+//
+// Parameters:
+//   - port: The port on which the server will listen for incoming requests.
+// Returns an error if the server fails to start or encounters an issue during execution
+// Example usage:
+//   err := router.Start("8080")
+//   if err != nil {
+//       log.Fatal(err)
+//   }
+
+// Note: The server will block the calling goroutine until it is stopped or an error occurs.
+//
+//	Ensure to handle graceful shutdowns and cleanup as needed.
 func (r *Router) Start(port string) error {
 	r.printStartupInfo()
 	r.printConfiguration()

@@ -454,6 +454,15 @@ func (c *Context) IsWebSocket() bool {
 	return strings.ToLower(upgrade) == "websocket"
 }
 
+// SwitchToWebSocket upgrades the connection to WebSocket
+// and returns the WebSocket connection
+//
+// Note: This function is not thread-safe and should be called only once
+// for each request. It is the caller's responsibility to ensure
+// that the connection is not used after it has been closed.
+// It is also the caller's responsibility to close the connection
+// when it is no longer needed.
+// The connection will be closed automatically when the request is done.
 func (c *Context) SwitchToWebSocket() (*ws.Conn, error) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
