@@ -1,6 +1,6 @@
 # Draupnir
 
-**Draupnir** is a high-performance, modern HTTP router and WebSocket framework for Go, designed for productivity, flexibility, and speed. It provides a clean API, robust middleware support, built-in rate limiting, worker pools, and seamless WebSocket integration—all with minimal dependencies.
+**Draupnir** is a high-performance, modern HTTP/WebSocket router library for Go, designed for productivity, flexibility, and speed. It provides a clean API, robust middleware support, built-in rate limiting, worker pools, and seamless WebSocket integration—all with minimal dependencies.
 
 ---
 
