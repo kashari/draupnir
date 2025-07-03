@@ -258,11 +258,12 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if val, found := r.staticRoutes.Get(req.URL.Path); found {
 		rt := val.(route)
-		if rt.method == req.Method {
+		if rt.method == req.Method || req.Method == http.MethodOptions {
 			r.executeHandler(w, req, rt.handler)
 			golog.Debug("(STATIC ROUTE) Request: {} {}, from: {} completed in {}", req.Method, req.URL.Path, req.RemoteAddr, time.Since(start))
 			return
 		}
+
 		w.Header().Set("Allow", rt.method)
 		http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
 		golog.Warn("Method not allowed (static) {}", time.Since(start).String())
@@ -270,7 +271,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	for _, rt := range r.dynamicRoutes {
-		if params, ok := matchPattern(rt.pattern, req.URL.Path); ok && rt.method == req.Method {
+		if params, ok := matchPattern(rt.pattern, req.URL.Path); ok && (rt.method == req.Method || req.Method == http.MethodOptions) {
 			ctx := context.WithValue(req.Context(), paramsKey, params)
 			r.executeHandler(w, req.WithContext(ctx), rt.handler)
 			golog.Debug("(DYNAMIC ROUTE) Request: {} {}, from: {} completed in {}", req.Method, req.URL.Path, req.RemoteAddr, time.Since(start))
