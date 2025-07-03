@@ -11,10 +11,130 @@ import (
 	"github.com/kashari/golog"
 )
 
+// RouterGroup represents a group of routes with a common prefix and middleware.
+type RouterGroup struct {
+	prefix      string
+	middlewares []Middleware
+	router      *Router
+}
+
 // Use adds a middleware to the chain.
 func (r *Router) Use(m Middleware) *Router {
 	r.middlewares = append(r.middlewares, m)
 	return r
+}
+
+// Group creates a new route group with the specified prefix.
+// All routes registered on this group will be prefixed with the given prefix.
+func (r *Router) Group(prefix string) *RouterGroup {
+	return &RouterGroup{
+		prefix:      prefix,
+		middlewares: make([]Middleware, 0),
+		router:      r,
+	}
+}
+
+// Use adds middleware to the route group.
+// This middleware will be applied to all routes in this group.
+func (rg *RouterGroup) Use(m Middleware) *RouterGroup {
+	rg.middlewares = append(rg.middlewares, m)
+	return rg
+}
+
+// Group creates a sub-group with an additional prefix.
+// The new group will inherit the current group's prefix and middleware.
+func (rg *RouterGroup) Group(prefix string) *RouterGroup {
+	return &RouterGroup{
+		prefix:      rg.prefix + prefix,
+		middlewares: append([]Middleware{}, rg.middlewares...), // Copy middlewares
+		router:      rg.router,
+	}
+}
+
+// HandleFunc registers a route using a Context-based handler in the group.
+func (rg *RouterGroup) HandleFunc(method, pattern string, handler func(*Context)) *RouterGroup {
+	fullPattern := rg.prefix + pattern
+
+	// Create a handler that applies group middlewares
+	wrappedHandler := func(w http.ResponseWriter, req *http.Request) {
+		ctx := &Context{Writer: w, Request: req}
+
+		// Create a handler function that applies group middlewares
+		finalHandler := func(c *Context) {
+			handler(c)
+		}
+
+		// Apply group middlewares in reverse order
+		for i := len(rg.middlewares) - 1; i >= 0; i-- {
+			middleware := rg.middlewares[i]
+			currentHandler := finalHandler
+			finalHandler = func(c *Context) {
+				// Convert Context-based handler to http.HandlerFunc for middleware
+				httpHandler := func(w http.ResponseWriter, r *http.Request) {
+					currentHandler(c)
+				}
+				// Apply middleware and convert back
+				wrappedHttpHandler := middleware(httpHandler)
+				wrappedHttpHandler(w, req)
+			}
+		}
+
+		finalHandler(ctx)
+	}
+
+	rt := route{
+		method:  method,
+		pattern: fullPattern,
+		handler: wrappedHandler,
+	}
+
+	if !strings.ContainsAny(fullPattern, ":*") {
+		rg.router.staticRoutes.Insert(fullPattern, rt)
+	} else {
+		rg.router.dynamicRoutes = append(rg.router.dynamicRoutes, rt)
+	}
+	return rg
+}
+
+// HTTP method helpers for RouterGroup
+func (rg *RouterGroup) GET(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc("GET", pattern, handler)
+}
+
+func (rg *RouterGroup) POST(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc(http.MethodPost, pattern, handler)
+}
+
+func (rg *RouterGroup) PUT(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc(http.MethodPut, pattern, handler)
+}
+
+func (rg *RouterGroup) DELETE(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc(http.MethodDelete, pattern, handler)
+}
+
+func (rg *RouterGroup) PATCH(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc(http.MethodPatch, pattern, handler)
+}
+
+func (rg *RouterGroup) OPTIONS(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc(http.MethodOptions, pattern, handler)
+}
+
+func (rg *RouterGroup) HEAD(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc(http.MethodHead, pattern, handler)
+}
+
+func (rg *RouterGroup) TRACE(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc(http.MethodTrace, pattern, handler)
+}
+
+func (rg *RouterGroup) CONNECT(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc(http.MethodConnect, pattern, handler)
+}
+
+func (rg *RouterGroup) ANY(pattern string, handler func(*Context)) *RouterGroup {
+	return rg.HandleFunc(http.MethodGet, pattern, handler)
 }
 
 // WithWorkerPool configures the router to use a worker pool.
