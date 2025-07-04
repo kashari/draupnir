@@ -341,6 +341,24 @@ func (c *Context) File(filepath string) error {
 	return nil
 }
 
+// send file as pdf type bytes
+func (c *Context) FileBytes(bytes []byte, filename string) error {
+	MIMEApplicationPDF := "application/pdf"
+	c.Writer.Header().Set(HeaderContentType, MIMEApplicationPDF)
+	c.Writer.Header().Set(HeaderContentDisposition, fmt.Sprintf("attachment; filename=%s", filename))
+	c.Writer.WriteHeader(http.StatusOK)
+	c.statusCode = http.StatusOK
+	if len(bytes) == 0 {
+		return errors.New("no data to write")
+	}
+	_, err := c.Writer.Write(bytes)
+	if err != nil {
+		golog.Error("Failed to write file bytes: {}", err)
+		return err
+	}
+	return nil
+}
+
 // Stream sends a stream response with optional content type
 func (c *Context) Stream(contentType string, r io.Reader) error {
 	if contentType != "" {
