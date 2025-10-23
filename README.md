@@ -4,7 +4,7 @@
 
 ---
 
-## ✨ Features
+## Features
 
 - **Lightning-fast HTTP routing** (static & dynamic routes)
 - **Middleware chaining** for request/response processing
@@ -20,7 +20,7 @@
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Installation
 
@@ -80,7 +80,7 @@ func main() {
 
 ---
 
-## 🛣️ HTTP Routing
+## HTTP Routing
 
 - **Static routes:**  
   `router.GET("/about", handler)`
@@ -103,7 +103,7 @@ api.GET("/profile", profileHandler)
 
 ---
 
-## 🧰 Context Utilities
+## Context Utilities
 
 - `ctx.Param("key")` — Path parameter (e.g., `/users/:id`)
 - `ctx.Query("q")` — Query parameter (`?q=search`)
@@ -119,7 +119,7 @@ api.GET("/profile", profileHandler)
 
 ---
 
-## 🔌 Middleware
+## Middleware
 
 Add middleware globally or per group:
 
@@ -136,7 +136,7 @@ func loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 ---
 
-## ⚡ Worker Pool
+## Worker Pool
 
 Enable concurrent request processing:
 
@@ -146,7 +146,7 @@ router.WithWorkerPool(16) // 16 workers
 
 ---
 
-## 🚦 Rate Limiting
+## Rate Limiting
 
 Configure a token bucket rate limiter:
 
@@ -156,7 +156,7 @@ router.WithRateLimiter(100, 1*time.Second) // 100 requests per second
 
 ---
 
-## 📡 WebSocket Support
+## WebSocket Support
 
 - Upgrade any route to WebSocket with `router.WEBSOCKET(path, handler)`
 - Send and receive messages via `SendChan` and `ReceiveChan`
@@ -173,7 +173,7 @@ router.WEBSOCKET("/ws/chat", func(ws *draupnir.WebSocketConn) {
 
 ---
 
-## 📋 Logging
+## Logging
 
 - File and console logging via [golog](https://github.com/kashari/golog)
 - Enable file logging:  
@@ -181,13 +181,13 @@ router.WEBSOCKET("/ws/chat", func(ws *draupnir.WebSocketConn) {
 
 ---
 
-## 🧪 Testing
+## Testing
 
 Draupnir is designed for testability. You can use Go's standard `net/http/httptest` package to test your handlers and middleware.
 
 ---
 
-## 📚 Example Project
+## Example Project
 
 See [`example/main.go`](example/main.go) for a complete example with HTTP and WebSocket endpoints.
 
@@ -203,23 +203,17 @@ See [`example/main.go`](example/main.go) for a complete example with HTTP and We
 
 ---
 
-## 🛡️ License
-
-This project is licensed under the [GNU General Public License v3.0](LICENSE).
-
----
-
-## 🤝 Contributing
+## Contributing
 
 Contributions, issues, and feature requests are welcome!  
 Feel free to open an [issue](https://github.com/kashari/draupnir/issues) or submit a pull request.
 
 ---
 
-## 🧙 About the Name
+## About the Name
 
 **Draupnir** (pronounced [ˈdrɔupnez̠]) is a legendary ring in Norse mythology, symbolizing abundance and reliability—just like this router aims to be for your Go web services.
 
 ---
 
-**Made with ❤️ by [@kashari](https://github.com/kashari)**
+** [@kashari](https://github.com/kashari)**
