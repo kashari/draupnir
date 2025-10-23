@@ -213,7 +213,3 @@ Feel free to open an [issue](https://github.com/kashari/draupnir/issues) or subm
 ## About the Name
 
 **Draupnir** (pronounced [ˈdrɔupnez̠]) is a legendary ring in Norse mythology, symbolizing abundance and reliability—just like this router aims to be for your Go web services.
-
----
-
-** [@kashari](https://github.com/kashari)**
