@@ -136,6 +136,13 @@ func (wsc *websocketConnection) writeFrame(opcode byte, payload []byte) error {
 		return err
 	}
 
+	// Flush the buffer to ensure the frame is sent immediately
+	if flusher, ok := writer.(interface{ Flush() error }); ok {
+		if err := flusher.Flush(); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
