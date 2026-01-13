@@ -48,13 +48,14 @@ func (wsc *websocketConnection) readFrame() (opcode byte, payload []byte, err er
 	payloadLen := int64(secondByte[0] & 0x7F)
 
 	// Handle extended payload length
-	if payloadLen == 126 {
+	switch payloadLen {
+	case 126:
 		extendedLen := make([]byte, 2)
 		if _, err = io.ReadFull(reader, extendedLen); err != nil {
 			return 0, nil, err
 		}
 		payloadLen = int64(binary.BigEndian.Uint16(extendedLen))
-	} else if payloadLen == 127 {
+	case 127:
 		extendedLen := make([]byte, 8)
 		if _, err = io.ReadFull(reader, extendedLen); err != nil {
 			return 0, nil, err
@@ -202,6 +203,15 @@ func (wsc *WebSocketConn) Close() {
 			wsc.conn.close()
 		}
 	}
+}
+
+// Get the Query Params from the URL
+func (w *WebSocketConn) QueryParam(s string) any {
+	return w.conn.req.URL.Query().Get(s)
+}
+
+func (w *WebSocketConn) Header(s string) any {
+	return w.conn.req.Header.Get(s)
 }
 
 // WEBSOCKET adds a WebSocket endpoint to the router

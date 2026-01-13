@@ -268,7 +268,7 @@ func (c *Context) GetBool(key string) bool {
 }
 
 // BindJSON binds JSON body to a struct
-func (c *Context) BindJSON(obj interface{}) error {
+func (c *Context) BindJSON(obj any) error {
 	return c.decodeJSON(obj)
 }
 
