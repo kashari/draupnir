@@ -13,8 +13,39 @@ func main() {
 		WithWorkerPool(10).
 		WithRateLimiter(10, 1*time.Second)
 
+	// Context-native middleware: runs, calls Next to invoke the rest of the
+	// chain, then regains control to log the elapsed time. Registered before
+	// routes so it applies to everything below.
+	router.Use(func(ctx *draupnir.Context) {
+		start := time.Now()
+		ctx.Next()
+		golog.Info("{} {} took {}", ctx.Method(), ctx.Path(), time.Since(start))
+	})
+
+	// A pub/sub bus fanning events out to every connected SSE client.
+	bus := draupnir.NewBroker()
+
 	router.GET("/", func(ctx *draupnir.Context) {
 		ctx.String(200, "Hello, World!")
+	})
+
+	// Server-Sent Events "bus" endpoint: subscribes each client to the "news"
+	// topic and streams every published event until the client disconnects.
+	router.EVENTSTREAM("/events", "news", bus)
+
+	// Publish to the bus: curl -X POST -d 'hello' localhost:4423/publish
+	router.POST("/publish", func(ctx *draupnir.Context) {
+		msg := ctx.FormValue("message")
+		if msg == "" {
+			msg = "ping"
+		}
+		bus.Publish("news", draupnir.Event{Event: "news", Data: []byte(msg)})
+		ctx.String(200, "published: %s", msg)
+	})
+
+	// Wildcard capture: /files/a/b/c -> path == "a/b/c"
+	router.GET("/files/*path", func(ctx *draupnir.Context) {
+		ctx.String(200, "requested: %s", ctx.Param("path"))
 	})
 
 	router.GET("/hello/:name", func(ctx *draupnir.Context) {

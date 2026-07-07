@@ -1,7 +1,6 @@
 package draupnir
 
 import (
-	"context"
 	"net/http"
 	"reflect"
 	"runtime"
@@ -14,130 +13,115 @@ import (
 // RouterGroup represents a group of routes with a common prefix and middleware.
 type RouterGroup struct {
 	prefix      string
-	middlewares []Middleware
+	middlewares []HandlerFunc
 	router      *Router
 }
 
-// Use adds a middleware to the chain.
-func (r *Router) Use(m Middleware) *Router {
-	r.middlewares = append(r.middlewares, m)
+// Use adds one or more Context-native middleware to the global chain.
+//
+// Middleware are composed into each route's chain at registration time, so
+// Use must be called before the routes it should apply to (gin-style).
+func (r *Router) Use(m ...HandlerFunc) *Router {
+	r.middlewares = append(r.middlewares, m...)
 	return r
 }
 
+// UseHTTP attaches a classic net/http middleware (func(http.HandlerFunc) http.HandlerFunc).
+//
+// The wrapped middleware should call next to continue the chain; if it does not,
+// the request is aborted and downstream handlers are skipped.
+func (r *Router) UseHTTP(m Middleware) *Router {
+	return r.Use(wrapHTTPMiddleware(m))
+}
+
+// wrapHTTPMiddleware adapts a net/http middleware into a Context-native one.
+func wrapHTTPMiddleware(m Middleware) HandlerFunc {
+	return func(c *Context) {
+		called := false
+		next := func(http.ResponseWriter, *http.Request) {
+			called = true
+			c.Next()
+		}
+		m(next)(c.Writer, c.Request)
+		if !called {
+			c.Abort()
+		}
+	}
+}
+
 // Group creates a new route group with the specified prefix.
-// All routes registered on this group will be prefixed with the given prefix.
 func (r *Router) Group(prefix string) *RouterGroup {
 	return &RouterGroup{
 		prefix:      prefix,
-		middlewares: make([]Middleware, 0),
+		middlewares: make([]HandlerFunc, 0),
 		router:      r,
 	}
 }
 
-// Use adds middleware to the route group.
-// This middleware will be applied to all routes in this group.
-func (rg *RouterGroup) Use(m Middleware) *RouterGroup {
-	rg.middlewares = append(rg.middlewares, m)
+// Use adds middleware applied to all routes registered on this group afterwards.
+func (rg *RouterGroup) Use(m ...HandlerFunc) *RouterGroup {
+	rg.middlewares = append(rg.middlewares, m...)
 	return rg
 }
 
-// Group creates a sub-group with an additional prefix.
-// The new group will inherit the current group's prefix and middleware.
+// Group creates a sub-group that inherits this group's prefix and middleware.
 func (rg *RouterGroup) Group(prefix string) *RouterGroup {
 	return &RouterGroup{
 		prefix:      rg.prefix + prefix,
-		middlewares: append([]Middleware{}, rg.middlewares...), // Copy middlewares
+		middlewares: append([]HandlerFunc{}, rg.middlewares...),
 		router:      rg.router,
 	}
 }
 
-// HandleFunc registers a route using a Context-based handler in the group.
-func (rg *RouterGroup) HandleFunc(method, pattern string, handler func(*Context)) *RouterGroup {
-	fullPattern := rg.prefix + pattern
-
-	// Create a handler that applies group middlewares
-	wrappedHandler := func(w http.ResponseWriter, req *http.Request) {
-		ctx := &Context{Writer: w, Request: req}
-
-		// Create a handler function that applies group middlewares
-		finalHandler := func(c *Context) {
-			handler(c)
-		}
-
-		// Apply group middlewares in reverse order
-		for i := len(rg.middlewares) - 1; i >= 0; i-- {
-			middleware := rg.middlewares[i]
-			currentHandler := finalHandler
-			finalHandler = func(c *Context) {
-				// Convert Context-based handler to http.HandlerFunc for middleware
-				httpHandler := func(w http.ResponseWriter, r *http.Request) {
-					currentHandler(c)
-				}
-				// Apply middleware and convert back
-				wrappedHttpHandler := middleware(httpHandler)
-				wrappedHttpHandler(w, req)
-			}
-		}
-
-		finalHandler(ctx)
-	}
-
-	rt := route{
-		method:  method,
-		pattern: fullPattern,
-		handler: wrappedHandler,
-	}
-
-	if !strings.ContainsAny(fullPattern, ":*") {
-		rg.router.staticRoutes.Insert(fullPattern, rt)
-	} else {
-		rg.router.dynamicRoutes = append(rg.router.dynamicRoutes, rt)
-	}
+// HandleFunc registers a Context-based handler on the group.
+func (rg *RouterGroup) HandleFunc(method, pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	chain := rg.router.buildChain(rg.middlewares, mw, handler)
+	rg.router.register(method, rg.prefix+pattern, false, chain)
 	return rg
 }
 
 // HTTP method helpers for RouterGroup
-func (rg *RouterGroup) GET(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc("GET", pattern, handler)
+func (rg *RouterGroup) GET(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(GET, pattern, handler, mw...)
 }
 
-func (rg *RouterGroup) POST(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc(http.MethodPost, pattern, handler)
+func (rg *RouterGroup) POST(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(http.MethodPost, pattern, handler, mw...)
 }
 
-func (rg *RouterGroup) PUT(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc(http.MethodPut, pattern, handler)
+func (rg *RouterGroup) PUT(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(http.MethodPut, pattern, handler, mw...)
 }
 
-func (rg *RouterGroup) DELETE(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc(http.MethodDelete, pattern, handler)
+func (rg *RouterGroup) DELETE(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(http.MethodDelete, pattern, handler, mw...)
 }
 
-func (rg *RouterGroup) PATCH(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc(http.MethodPatch, pattern, handler)
+func (rg *RouterGroup) PATCH(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(http.MethodPatch, pattern, handler, mw...)
 }
 
-func (rg *RouterGroup) OPTIONS(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc(http.MethodOptions, pattern, handler)
+func (rg *RouterGroup) OPTIONS(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(http.MethodOptions, pattern, handler, mw...)
 }
 
-func (rg *RouterGroup) HEAD(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc(http.MethodHead, pattern, handler)
+func (rg *RouterGroup) HEAD(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(http.MethodHead, pattern, handler, mw...)
 }
 
-func (rg *RouterGroup) TRACE(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc(http.MethodTrace, pattern, handler)
+func (rg *RouterGroup) TRACE(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(http.MethodTrace, pattern, handler, mw...)
 }
 
-func (rg *RouterGroup) CONNECT(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc(http.MethodConnect, pattern, handler)
+func (rg *RouterGroup) CONNECT(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(http.MethodConnect, pattern, handler, mw...)
 }
 
-func (rg *RouterGroup) ANY(pattern string, handler func(*Context)) *RouterGroup {
-	return rg.HandleFunc(http.MethodGet, pattern, handler)
+func (rg *RouterGroup) ANY(pattern string, handler HandlerFunc, mw ...HandlerFunc) *RouterGroup {
+	return rg.HandleFunc(http.MethodGet, pattern, handler, mw...)
 }
 
-// WithWorkerPool configures the router to use a worker pool.
+// WithWorkerPool caps the number of concurrently executing handlers.
 func (r *Router) WithWorkerPool(poolSize int) *Router {
 	r.workerPool = NewWorkerPool(poolSize)
 	return r
@@ -149,98 +133,122 @@ func (r *Router) WithRateLimiter(maxTokens int, refillInterval time.Duration) *R
 	return r
 }
 
-// WithFileLogging configures the router to log to the specified file in addition to the console.
-// If the file cannot be opened, it logs an error and leaves the existing logger intact.
+// WithFileLogging configures the router to log to the specified file in addition
+// to the console. It also marks logging as externally configured so the router
+// does not install its default log sink.
 func (r *Router) WithFileLogging(filePath string) *Router {
-	err := golog.Init(filePath)
-	if err != nil {
-		golog.Error("Failed to open log file {}: {}}", filePath, err)
+	r.loggingConfigured = true
+	if err := golog.Init(filePath); err != nil {
+		golog.Error("Failed to open log file {}: {}", filePath, err)
 	} else {
 		golog.Info("Logging to file {}", filePath)
 	}
-
 	return r
 }
 
-// Handle registers a new route.
-func (r *Router) Handle(method, pattern string, handler http.HandlerFunc) *Router {
+// buildChain composes global + group + per-route middleware and the leaf handler
+// into a single slice, once, at registration time.
+func (r *Router) buildChain(groupMW, routeMW []HandlerFunc, h HandlerFunc) []HandlerFunc {
+	chain := make([]HandlerFunc, 0, len(r.middlewares)+len(groupMW)+len(routeMW)+1)
+	chain = append(chain, r.middlewares...)
+	chain = append(chain, groupMW...)
+	chain = append(chain, routeMW...)
+	chain = append(chain, h)
+	return chain
+}
+
+// register stores a compiled route in either the static tree or the dynamic slice.
+func (r *Router) register(method, pattern string, streaming bool, chain []HandlerFunc) *Router {
 	rt := route{
-		method:  method,
-		pattern: pattern,
-		handler: handler,
+		method:    method,
+		pattern:   pattern,
+		handlers:  chain,
+		streaming: streaming,
 	}
-	if !strings.ContainsAny(pattern, ":*") {
-		r.staticRoutes.Insert(pattern, rt)
-	} else {
+	if strings.ContainsAny(pattern, ":*") {
+		rt.segments, rt.wildcard = compilePattern(pattern)
 		r.dynamicRoutes = append(r.dynamicRoutes, rt)
+	} else {
+		r.insertStatic(pattern, rt)
 	}
 	return r
+}
+
+// insertStatic adds a static route, allowing multiple methods per path.
+func (r *Router) insertStatic(pattern string, rt route) {
+	if v, ok := r.staticRoutes.Get(pattern); ok {
+		v.(*staticEntry).methods[rt.method] = rt
+		return
+	}
+	entry := &staticEntry{methods: map[string]route{rt.method: rt}}
+	r.staticRoutes.Insert(pattern, entry)
+}
+
+// Handle registers a classic net/http handler.
+func (r *Router) Handle(method, pattern string, handler http.HandlerFunc) *Router {
+	return r.HandleFunc(method, pattern, func(c *Context) {
+		handler(c.Writer, c.Request)
+	})
 }
 
 // HandleFunc registers a route using a Context-based handler.
-func (r *Router) HandleFunc(method, pattern string, handler func(*Context)) *Router {
-	rt := route{
-		method:  method,
-		pattern: pattern,
-		handler: func(w http.ResponseWriter, req *http.Request) {
-			ctx := &Context{Writer: w, Request: req}
-			handler(ctx)
-		},
-	}
-	if !strings.ContainsAny(pattern, ":*") {
-		r.staticRoutes.Insert(pattern, rt)
-	} else {
-		r.dynamicRoutes = append(r.dynamicRoutes, rt)
-	}
-	return r
+func (r *Router) HandleFunc(method, pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.register(method, pattern, false, r.buildChain(nil, mw, handler))
 }
 
-func (r *Router) GET(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc("GET", pattern, handler)
+// handleStreaming registers a long-lived (WebSocket/SSE) route that bypasses the
+// rate limiter and concurrency limiter.
+func (r *Router) handleStreaming(method, pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.register(method, pattern, true, r.buildChain(nil, mw, handler))
 }
 
-func (r *Router) POST(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc(http.MethodPost, pattern, handler)
+func (r *Router) GET(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(GET, pattern, handler, mw...)
 }
 
-func (r *Router) PUT(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc(http.MethodPut, pattern, handler)
+func (r *Router) POST(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(http.MethodPost, pattern, handler, mw...)
 }
 
-func (r *Router) DELETE(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc(http.MethodDelete, pattern, handler)
+func (r *Router) PUT(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(http.MethodPut, pattern, handler, mw...)
 }
 
-func (r *Router) PATCH(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc(http.MethodPatch, pattern, handler)
+func (r *Router) DELETE(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(http.MethodDelete, pattern, handler, mw...)
 }
 
-func (r *Router) OPTIONS(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc(http.MethodOptions, pattern, handler)
+func (r *Router) PATCH(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(http.MethodPatch, pattern, handler, mw...)
 }
 
-func (r *Router) HEAD(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc(http.MethodHead, pattern, handler)
+func (r *Router) OPTIONS(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(http.MethodOptions, pattern, handler, mw...)
 }
 
-func (r *Router) TRACE(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc(http.MethodTrace, pattern, handler)
+func (r *Router) HEAD(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(http.MethodHead, pattern, handler, mw...)
 }
 
-func (r *Router) CONNECT(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc(http.MethodConnect, pattern, handler)
+func (r *Router) TRACE(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(http.MethodTrace, pattern, handler, mw...)
 }
 
-func (r *Router) ANY(pattern string, handler func(*Context)) *Router {
-	return r.HandleFunc(http.MethodGet, pattern, handler)
+func (r *Router) CONNECT(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(http.MethodConnect, pattern, handler, mw...)
+}
+
+func (r *Router) ANY(pattern string, handler HandlerFunc, mw ...HandlerFunc) *Router {
+	return r.HandleFunc(http.MethodGet, pattern, handler, mw...)
 }
 
 // ListRoutes returns a slice of strings describing all registered routes.
 func (r *Router) ListRoutes() []string {
 	var routes []string
 	r.staticRoutes.Walk(func(path string, v interface{}) bool {
-		rt := v.(route)
-		routes = append(routes, rt.method+" "+rt.pattern)
+		for m := range v.(*staticEntry).methods {
+			routes = append(routes, m+" "+path)
+		}
 		return false
 	})
 	for _, rt := range r.dynamicRoutes {
@@ -250,85 +258,83 @@ func (r *Router) ListRoutes() []string {
 }
 
 // ServeHTTP implements http.Handler.
-// It checks if the request matches a static or dynamic route and executes the corresponding handler.
-// If no route matches, it returns a 404 Not Found error.
-// It also logs the request details and execution time.
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	start := time.Now()
+	r.ensureLogging()
 
-	if val, found := r.staticRoutes.Get(req.URL.Path); found {
-		rt := val.(route)
-		if rt.method == req.Method || req.Method == http.MethodOptions {
-			r.executeHandler(w, req, rt.handler)
-			golog.Debug("(STATIC ROUTE) Request: {} {}, from: {} completed in {}", req.Method, req.URL.Path, req.RemoteAddr, time.Since(start))
+	c := acquireContext()
+	c.reset(w, req, r)
+	defer releaseContext(c)
+
+	path := req.URL.Path
+
+	// Static routes first (exact-path radix lookup).
+	if v, found := r.staticRoutes.Get(path); found {
+		entry := v.(*staticEntry)
+		if rt, ok := entry.methods[req.Method]; ok {
+			r.runChain(c, &rt)
 			return
 		}
-
-		w.Header().Set("Allow", rt.method)
+		if req.Method == OPTIONS {
+			for _, rt := range entry.methods {
+				r.runChain(c, &rt)
+				return
+			}
+		}
+		w.Header().Set("Allow", allowHeader(entry))
 		http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
-		golog.Warn("Method not allowed (static) {}", time.Since(start).String())
 		return
 	}
 
-	for _, rt := range r.dynamicRoutes {
-		if params, ok := matchPattern(rt.pattern, req.URL.Path); ok && (rt.method == req.Method || req.Method == http.MethodOptions) {
-			ctx := context.WithValue(req.Context(), paramsKey, params)
-			r.executeHandler(w, req.WithContext(ctx), rt.handler)
-			golog.Debug("(DYNAMIC ROUTE) Request: {} {}, from: {} completed in {}", req.Method, req.URL.Path, req.RemoteAddr, time.Since(start))
-			return
+	// Dynamic routes: split the path once, then scan.
+	if len(r.dynamicRoutes) > 0 {
+		parts := splitPath(path)
+		for i := range r.dynamicRoutes {
+			rt := &r.dynamicRoutes[i]
+			if rt.method != req.Method && req.Method != OPTIONS {
+				continue
+			}
+			c.params = c.params[:0]
+			if rt.matchParts(parts, &c.params) {
+				r.runChain(c, rt)
+				return
+			}
 		}
 	}
 
 	http.NotFound(w, req)
-	golog.Warn("Route not found {}", time.Since(start).String())
+	golog.Warn("Route not found {}", path)
 }
 
-// executeHandler runs the handler with the middleware chain and rate limiter.
-func (r *Router) executeHandler(w http.ResponseWriter, req *http.Request, handler http.HandlerFunc) {
-	finalHandler := handler
-	for i := len(r.middlewares) - 1; i >= 0; i-- {
-		finalHandler = r.middlewares[i](finalHandler)
+// runChain applies the rate limiter and concurrency limiter (unless streaming),
+// then executes the route's precompiled handler chain.
+func (r *Router) runChain(c *Context, rt *route) {
+	c.handlers = rt.handlers
+	c.index = -1
+
+	if rt.streaming {
+		c.Next()
+		return
 	}
 
 	if r.rateLimiter != nil && !r.rateLimiter.Allow() {
-		http.Error(w, "429 Too Many Requests", http.StatusTooManyRequests)
+		http.Error(c.Writer, "429 Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
 
 	if r.workerPool != nil {
-		done := make(chan struct{})
-		err := r.workerPool.Submit(func() {
-			finalHandler(w, req)
-			close(done)
-		})
-		if err != nil {
-			http.Error(w, "503 Service Unavailable", http.StatusServiceUnavailable)
+		if !r.workerPool.acquire() {
+			http.Error(c.Writer, "503 Service Unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		<-done // wait for completion
-	} else {
-		finalHandler(w, req)
+		defer r.workerPool.release()
 	}
+
+	c.Next()
 }
 
-// Start launches the HTTP server on the specified port after printing full configuration.
-// It also logs the startup information and registered routes.
-// The server will listen on the specified port and handle incoming requests.
-// The server will run indefinitely until an error occurs or the program is terminated.
-//
-// Parameters:
-//   - port: The port on which the server will listen for incoming requests.
-// Returns an error if the server fails to start or encounters an issue during execution
-// Example usage:
-//   err := router.Start("8080")
-//   if err != nil {
-//       log.Fatal(err)
-//   }
-
-// Note: The server will block the calling goroutine until it is stopped or an error occurs.
-//
-//	Ensure to handle graceful shutdowns and cleanup as needed.
+// Start launches the HTTP server on the specified port after printing configuration.
 func (r *Router) Start(port string) error {
+	r.ensureLogging()
 	r.printStartupInfo()
 	r.printConfiguration()
 	golog.Info("Starting server in port {}", port)
@@ -344,12 +350,12 @@ func (r *Router) Start(port string) error {
 
 func (r *Router) printStartupInfo() {
 	logo := `
-    .___                                 .__        
-  __| _/___________   __ ________   ____ |__|______ 
+    .___                                 .__
+  __| _/___________   __ ________   ____ |__|______
  / __ |\_  __ \__  \ |  |  \____ \ /    \|  \_  __ \
 / /_/ | |  | \// __ \|  |  /  |_> >   |  \  ||  | \/
-\____ | |__|  (____  /____/|   __/|___|  /__||__|   
-     \/            \/      |__|        \/           
+\____ | |__|  (____  /____/|   __/|___|  /__||__|
+     \/            \/      |__|        \/
 
 			[ˈdrɔupnez̠] - A simple HTTP router for Go
 `
@@ -358,55 +364,95 @@ func (r *Router) printStartupInfo() {
 
 // printConfiguration logs all startup configuration details.
 func (r *Router) printConfiguration() {
-	// Log registered routes.
 	golog.Info("-------------------------- Registered Routes ---------------------------")
 	for _, rt := range r.ListRoutes() {
 		golog.Info("Route " + rt)
 	}
 	golog.Info("-------------------------- Registered Routes ---------------------------")
 
-	// Rate limiter configuration.
 	if r.rateLimiter != nil {
 		golog.Info("Rate Limiter Configuration MAX_TOKENS: {} REFILL_INTERVAL: {}", r.rateLimiter.maxTokens, r.rateLimiter.refillInterval)
 	} else {
 		golog.Info("Rate Limiter not configured")
 	}
-	// Worker pool configuration.
 	if r.workerPool != nil {
-		golog.Info("Worker Pool Configuration SIZE: {}", r.workerPool.size)
+		golog.Info("Concurrency Limiter Configuration SIZE: {}", r.workerPool.size)
 	} else {
-		golog.Info("Worker Pool not configured")
+		golog.Info("Concurrency Limiter not configured")
 	}
 
 	if len(r.middlewares) > 0 {
 		golog.Info("-------------------------- Middleware Chain ---------------------------")
-		golog.Info("--")
 		for i, mw := range r.middlewares {
 			golog.Info("Middleware {}: {}", i, getFunctionName(mw))
 		}
-		golog.Info("--")
 		golog.Info("-------------------------- Middleware Chain ---------------------------")
 	}
-
 }
 
-// matchPattern compares a route pattern with a request path.
-func matchPattern(pattern, path string) (map[string]string, bool) {
-	patternParts := splitPath(pattern)
-	pathParts := splitPath(path)
-	if len(patternParts) != len(pathParts) {
-		return nil, false
-	}
-	params := make(map[string]string)
-	for i, part := range patternParts {
-		if len(part) > 0 && part[0] == ':' {
-			key := part[1:]
-			params[key] = pathParts[i]
-		} else if part != pathParts[i] {
-			return nil, false
+// compilePattern splits a dynamic pattern into precomputed segments.
+func compilePattern(pattern string) (segs []segment, wildcard bool) {
+	parts := splitPath(pattern)
+	segs = make([]segment, len(parts))
+	for i, p := range parts {
+		switch {
+		case len(p) > 0 && p[0] == ':':
+			segs[i] = segment{kind: segParam, value: p[1:]}
+		case len(p) > 0 && p[0] == '*':
+			segs[i] = segment{kind: segWildcard, value: p[1:]}
+			wildcard = true
+		default:
+			segs[i] = segment{kind: segLiteral, value: p}
 		}
 	}
-	return params, true
+	return segs, wildcard
+}
+
+// matchParts matches a request path (already split into parts) against the
+// route's compiled segments, appending captured params.
+func (rt *route) matchParts(parts []string, params *[]Param) bool {
+	if rt.wildcard {
+		fixed := len(rt.segments) - 1 // segments before the trailing wildcard
+		if len(parts) < fixed {
+			return false
+		}
+		for i := 0; i < fixed; i++ {
+			seg := rt.segments[i]
+			if seg.kind == segLiteral {
+				if parts[i] != seg.value {
+					return false
+				}
+			} else {
+				*params = append(*params, Param{Key: seg.value, Value: parts[i]})
+			}
+		}
+		rest := strings.Join(parts[fixed:], "/")
+		*params = append(*params, Param{Key: rt.segments[fixed].value, Value: rest})
+		return true
+	}
+
+	if len(parts) != len(rt.segments) {
+		return false
+	}
+	for i, seg := range rt.segments {
+		if seg.kind == segLiteral {
+			if parts[i] != seg.value {
+				return false
+			}
+		} else {
+			*params = append(*params, Param{Key: seg.value, Value: parts[i]})
+		}
+	}
+	return true
+}
+
+// allowHeader builds the Allow header value for a static path's methods.
+func allowHeader(e *staticEntry) string {
+	methods := make([]string, 0, len(e.methods))
+	for m := range e.methods {
+		methods = append(methods, m)
+	}
+	return strings.Join(methods, ", ")
 }
 
 // splitPath splits a URL path into non-empty segments.

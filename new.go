@@ -1,7 +1,10 @@
 package draupnir
 
 import (
+	"fmt"
 	"net/http"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/kashari/draupnir/tree"
@@ -28,22 +31,47 @@ var upgrader = ws.Upgrader{
 	},
 	HandshakeTimeout: 10 * time.Second,
 	Error: func(w http.ResponseWriter, req *http.Request, status int, reason error) {
-		// Custom error logging or response
-		// For example, log the error:
-		// log.Printf("WebSocket upgrade error for %s: %v (status %d)", req.URL.Path, reason, status)
 		golog.Error("WebSocket upgrade error for {}: {} (status {})", req.URL.Path, reason, status)
 		http.Error(w, reason.Error(), status)
 	},
 }
 
-// NewRateLimiter creates a new rate limiter.
+// DefaultLogFile is the file the router initializes golog with when the
+// application never calls WithFileLogging (or golog.Init) itself. golog panics
+// if used before initialization, so the router installs this default lazily.
+var DefaultLogFile = "draupnir.log"
+
+var loggingInitOnce sync.Once
+
+// ensureLogging guarantees golog is usable. If logging was configured on the
+// router (WithFileLogging), nothing happens. Otherwise it probes golog: golog
+// panics when uninitialized, so a recovered panic means we must install the
+// default sink; no panic means logging was initialized externally and is left
+// untouched.
+func (r *Router) ensureLogging() {
+	if r.loggingConfigured {
+		return
+	}
+	loggingInitOnce.Do(func() {
+		defer func() {
+			if recover() != nil {
+				if err := golog.Init(DefaultLogFile); err != nil {
+					fmt.Fprintf(os.Stderr, "draupnir: failed to initialize default logging: %v\n", err)
+				}
+			}
+		}()
+		golog.Debug("draupnir logging initialized")
+	})
+}
+
+// NewRateLimiter creates a new fixed-window rate limiter.
 func NewRateLimiter(maxTokens int, refillInterval time.Duration) *RateLimiter {
 	rl := &RateLimiter{
-		tokens:         maxTokens,
-		maxTokens:      maxTokens,
+		maxTokens:      int64(maxTokens),
 		refillInterval: refillInterval,
 		quit:           make(chan struct{}),
 	}
+	rl.tokens.Store(int64(maxTokens))
 	go rl.refillTokens()
 	return rl
 }
@@ -52,20 +80,16 @@ func New() *Router {
 	r := &Router{
 		staticRoutes:  tree.New(),
 		dynamicRoutes: make([]route, 0),
-		middlewares:   []Middleware{},
+		middlewares:   []HandlerFunc{},
 	}
 	return r
 }
 
-// NewWorkerPool creates a new worker pool with the given size.
-// It sets the channel buffer to size*10 to allow bursts of tasks.
+// NewWorkerPool creates a concurrency limiter that caps the number of
+// simultaneously executing handlers at size.
 func NewWorkerPool(size int) *WorkerPool {
-	wp := &WorkerPool{
-		tasks: make(chan func(), size*10),
-		size:  size,
+	return &WorkerPool{
+		sem:  make(chan struct{}, size),
+		size: size,
 	}
-	for range size {
-		go wp.worker()
-	}
-	return wp
 }

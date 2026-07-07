@@ -1,4 +1,4 @@
-package example
+package main
 
 import (
 	"fmt"
@@ -12,7 +12,9 @@ var clients = make(map[*draupnir.WebSocketConn]string)
 
 var broadcastMu sync.Mutex
 
-func main() {
+// runWSChatExample is an alternative broadcast-chat demo. It is not wired into
+// main() (that lives in main.go); call it directly if you want to run it.
+func runWSChatExample() {
 	golog.Init("./dr.log")
 	router := draupnir.New()
 

@@ -1,21 +1,17 @@
 package draupnir
 
-func (wp *WorkerPool) worker() {
-	for task := range wp.tasks {
-		task()
-		wp.wg.Done()
+// acquire reserves a concurrency slot without blocking. It returns false when
+// the limiter is saturated so the caller can shed load (e.g. respond 503).
+func (wp *WorkerPool) acquire() bool {
+	select {
+	case wp.sem <- struct{}{}:
+		return true
+	default:
+		return false
 	}
 }
 
-// Submit adds a task to the pool and increments the waitgroup.
-func (wp *WorkerPool) Submit(task func()) error {
-	wp.wg.Add(1)
-	wp.tasks <- task
-	return nil
-}
-
-// Shutdown waits for all tasks to complete then closes the tasks channel.
-func (wp *WorkerPool) Shutdown() {
-	wp.wg.Wait()
-	close(wp.tasks)
+// release returns a previously acquired slot.
+func (wp *WorkerPool) release() {
+	<-wp.sem
 }
