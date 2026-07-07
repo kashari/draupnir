@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kashari/draupnir/ws"
@@ -20,10 +21,92 @@ import (
 )
 
 func (c *Context) Param(key string) string {
-	if params, ok := c.Request.Context().Value(ctxKey("params")).(map[string]string); ok {
-		return params[key]
+	for i := range c.params {
+		if c.params[i].Key == key {
+			return c.params[i].Value
+		}
 	}
 	return ""
+}
+
+// abortIndex is larger than any realistic handler chain; setting index to it
+// stops the chain from advancing. It is deliberately well below the maximum int
+// so that the index++ in Next after an Abort cannot overflow to a negative value.
+const abortIndex = 1 << 30
+
+// contextPool recycles Context values across requests to avoid a per-request
+// allocation on the hot path.
+var contextPool = sync.Pool{
+	New: func() any {
+		return &Context{params: make([]Param, 0, 8)}
+	},
+}
+
+func acquireContext() *Context {
+	return contextPool.Get().(*Context)
+}
+
+func releaseContext(c *Context) {
+	// Drop references so pooled Contexts don't pin request-scoped memory.
+	c.Request = nil
+	c.Writer = nil
+	c.router = nil
+	c.handlers = nil
+	c.store = nil
+	c.query = nil
+	c.formValues = nil
+	c.multipartForm = nil
+	contextPool.Put(c)
+}
+
+// reset re-initializes a pooled Context for a new request.
+func (c *Context) reset(w http.ResponseWriter, req *http.Request, r *Router) {
+	c.Request = req
+	c.Writer = w
+	c.router = r
+	c.path = req.URL.Path
+	c.method = req.Method
+	c.params = c.params[:0]
+	c.handlers = nil
+	c.index = -1
+	c.aborted = false
+	c.store = nil
+	c.query = nil
+	c.queryParsed = false
+	c.formValues = nil
+	c.formParsed = false
+	c.multipartForm = nil
+	c.multipartParsed = false
+	c.bodyParsed = false
+	c.statusCode = 0
+}
+
+// Next executes the pending handlers in the chain. Middleware call Next to run
+// the remainder of the chain and regain control afterwards.
+func (c *Context) Next() {
+	c.index++
+	for c.index < len(c.handlers) {
+		c.handlers[c.index](c)
+		c.index++
+	}
+}
+
+// Abort stops the remaining handlers in the chain from running.
+func (c *Context) Abort() {
+	c.aborted = true
+	c.index = abortIndex
+}
+
+// IsAborted reports whether the chain was aborted.
+func (c *Context) IsAborted() bool {
+	return c.aborted
+}
+
+// AbortWithStatus writes the status code and aborts the chain.
+func (c *Context) AbortWithStatus(code int) {
+	c.statusCode = code
+	c.Writer.WriteHeader(code)
+	c.Abort()
 }
 
 // ParamInt gets a path parameter as int by key
@@ -208,6 +291,9 @@ func (c *Context) parseMultipartForm() error {
 
 // Set sets a value in the context store
 func (c *Context) Set(key string, value interface{}) {
+	if c.store == nil {
+		c.store = make(map[string]any)
+	}
 	c.store[key] = value
 }
 
@@ -296,14 +382,16 @@ func (c *Context) decodeJSON(obj interface{}) error {
 
 // JSON sends a JSON response
 func (c *Context) JSON(code int, obj interface{}) error {
-	c.Writer.Header().Set(HeaderContentType, MIMEApplicationJSON)
-	c.Writer.WriteHeader(code)
-	c.statusCode = code
-
+	// Marshal before committing the status line so an encoding error does not
+	// leave a half-written response.
 	data, err := jsonMarshal(obj)
 	if err != nil {
 		return err
 	}
+
+	c.Writer.Header().Set(HeaderContentType, MIMEApplicationJSON)
+	c.Writer.WriteHeader(code)
+	c.statusCode = code
 
 	_, err = c.Writer.Write(data)
 	return err
@@ -316,7 +404,6 @@ func (c *Context) String(code int, format string, values ...any) error {
 	c.statusCode = code
 
 	if len(values) > 0 {
-		golog.Debug("{} {}", format, values)
 		_, err := c.Writer.Write(fmt.Appendf(nil, format, values...))
 		return err
 	}

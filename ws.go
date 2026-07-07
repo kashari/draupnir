@@ -214,9 +214,11 @@ func (w *WebSocketConn) Header(s string) any {
 	return w.conn.req.Header.Get(s)
 }
 
-// WEBSOCKET adds a WebSocket endpoint to the router
+// WEBSOCKET adds a WebSocket endpoint to the router. The route is registered as
+// streaming so it bypasses the rate limiter and concurrency limiter and never
+// holds a limiter slot for the lifetime of the connection.
 func (r *Router) WEBSOCKET(pattern string, handler WebSocketHandler) *Router {
-	return r.HandleFunc("GET", pattern, func(c *Context) {
+	return r.handleStreaming(GET, pattern, func(c *Context) {
 		// Check if the request is a WebSocket upgrade request
 		if !isWebSocketUpgrade(c.Request) {
 			http.Error(c.Writer, "Not a WebSocket handshake", http.StatusBadRequest)

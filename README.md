@@ -121,37 +121,76 @@ api.GET("/profile", profileHandler)
 
 ## Middleware
 
-Add middleware globally or per group:
+Middleware are Context-native (`func(*draupnir.Context)`). Call `ctx.Next()` to run the rest of the
+chain and regain control afterwards; call `ctx.Abort()` / `ctx.AbortWithStatus(code)` to stop it.
+Register middleware **before** the routes they should apply to.
 
 ```go
-router.Use(loggingMiddleware)
+router.Use(func(ctx *draupnir.Context) {
+    start := time.Now()
+    ctx.Next() // run downstream handlers
+    golog.Info("{} {} took {}", ctx.Method(), ctx.Path(), time.Since(start))
+})
 
-func loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        golog.Info("Request: {} {}", r.Method, r.URL.Path)
-        next(w, r)
-    }
-}
+// Per-route middleware:
+router.GET("/admin", adminHandler, requireAuth)
 ```
+
+Classic `net/http` middleware (`func(http.HandlerFunc) http.HandlerFunc`) can be attached with
+`router.UseHTTP(m)`.
 
 ---
 
-## Worker Pool
+## Concurrency Limiter
 
-Enable concurrent request processing:
+Cap the number of concurrently executing handlers (requests beyond the limit get `503`; WebSocket
+and SSE connections bypass the limiter):
 
 ```go
-router.WithWorkerPool(16) // 16 workers
+router.WithWorkerPool(16) // at most 16 in-flight handlers
 ```
 
 ---
 
 ## Rate Limiting
 
-Configure a token bucket rate limiter:
+Configure a fixed-window rate limiter:
 
 ```go
 router.WithRateLimiter(100, 1*time.Second) // 100 requests per second
+```
+
+---
+
+## Server-Sent Events & Bus Endpoints
+
+Stream events to clients, or fan a topic out to every subscriber with a `Broker`:
+
+```go
+bus := draupnir.NewBroker()
+
+// Turnkey bus endpoint: every client on /events receives whatever is
+// published to the "news" topic.
+router.EVENTSTREAM("/events", "news", bus)
+
+router.POST("/publish", func(ctx *draupnir.Context) {
+    bus.Publish("news", draupnir.Event{Data: []byte(ctx.FormValue("message"))})
+    ctx.String(200, "ok")
+})
+
+// Or a raw SSE stream for custom logic:
+router.SSE("/clock", func(ctx *draupnir.Context, s *draupnir.SSEStream) {
+    for {
+        select {
+        case <-s.Done():
+            return
+        case t := <-time.After(time.Second):
+            if s.SendData([]byte(t.String())) != nil {
+                return
+            }
+        }
+    }
+})
 ```
 
 ---

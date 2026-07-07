@@ -4,7 +4,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kashari/draupnir/tree"
@@ -45,50 +45,76 @@ const (
 	MIMEMultipartForm          = "multipart/form-data"
 	MIMETextPlain              = "text/plain"
 	MIMETextHTML               = "text/html"
+	MIMETextEventStream        = "text/event-stream"
 	MIMEApplicationOctetStream = "application/octet-stream"
 )
 
-type ctxKey string
+// HandlerFunc is the Context-native handler and middleware signature. Middleware
+// call Context.Next to run the rest of the chain; a leaf handler simply returns.
+type HandlerFunc func(*Context)
 
-const paramsKey ctxKey = "params"
+// MiddlewareFunc is an alias for HandlerFunc kept for readability at call sites.
+type MiddlewareFunc = HandlerFunc
 
-type route struct {
-	method  string
-	pattern string // e.g., "/users/:id"
-	handler http.HandlerFunc
-}
-
-// Wrapper for http.HandlerFunc
+// Middleware is the classic net/http middleware signature. It is preserved for
+// interop and can be attached with Router.UseHTTP.
 type Middleware func(http.HandlerFunc) http.HandlerFunc
 
-type WorkerPool struct {
-	tasks chan func()
-	wg    sync.WaitGroup
-	size  int
+// segKind classifies a single compiled path segment.
+type segKind uint8
+
+const (
+	segLiteral segKind = iota
+	segParam
+	segWildcard
+)
+
+// segment is one compiled component of a dynamic route pattern.
+type segment struct {
+	kind  segKind
+	value string // literal text, or the capture name for params/wildcards
 }
 
-// RateLimiter implements a token bucket rate limiter.
+// route holds a registered endpoint with its precompiled handler chain.
+type route struct {
+	method    string
+	pattern   string    // e.g., "/users/:id"
+	segments  []segment // precompiled segments (dynamic routes only)
+	wildcard  bool      // pattern ends with a *capture segment
+	handlers  []HandlerFunc
+	streaming bool // long-lived (WebSocket/SSE): bypass rate limiter + concurrency limit
+}
+
+// staticEntry stores every method registered for a single static path so that,
+// for example, GET /x and POST /x can coexist.
+type staticEntry struct {
+	methods map[string]route
+}
+
+// WorkerPool caps the number of concurrently executing handlers using a
+// buffered-channel semaphore. It adds no goroutines of its own; net/http already
+// serves each request on its own goroutine.
+type WorkerPool struct {
+	sem  chan struct{}
+	size int
+}
+
+// RateLimiter implements a fixed-window token limiter with a lock-free hot path.
 type RateLimiter struct {
-	tokens         int
-	maxTokens      int
-	mu             sync.Mutex
+	tokens         atomic.Int64
+	maxTokens      int64
 	refillInterval time.Duration
 	quit           chan struct{}
 }
 
 // Router is our HTTP router with integrated logging.
 type Router struct {
-	staticRoutes  *tree.Tree   // static routes stored by exact path
-	dynamicRoutes []route      // routes with parameters (e.g., ":id")
-	middlewares   []Middleware // middleware chain
-	workerPool    *WorkerPool  // optional worker pool for concurrent handling
-	rateLimiter   *RateLimiter // optional rate limiter on the critical path
-}
-
-type Group struct {
-	prefix      string
-	middlewares []Middleware
-	router      *Router
+	staticRoutes      *tree.Tree    // static routes stored by exact path -> *staticEntry
+	dynamicRoutes     []route       // routes with parameters (e.g., ":id", "*path")
+	middlewares       []HandlerFunc // global middleware chain
+	workerPool        *WorkerPool   // optional concurrency limiter
+	rateLimiter       *RateLimiter  // optional rate limiter on the critical path
+	loggingConfigured bool          // true once WithFileLogging ran
 }
 
 // Param represents a single URL parameter
@@ -97,9 +123,6 @@ type Param struct {
 	Value string
 }
 
-// HandlerFunc defines a function to handle HTTP requests
-type HandlerFunc func(*Context) error
-
 // Context represents the context for the current HTTP request
 type Context struct {
 	Request         *http.Request
@@ -107,6 +130,8 @@ type Context struct {
 	method          string
 	handlers        []HandlerFunc
 	index           int
+	aborted         bool
+	params          []Param
 	store           map[string]any
 	Writer          http.ResponseWriter
 	router          *Router
